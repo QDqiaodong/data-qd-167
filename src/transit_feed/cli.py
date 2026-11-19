@@ -7,6 +7,7 @@ import sys
 import tempfile
 from .feed import import_feed
 from .query import departures
+from .revision import revision_apply, revision_init, revised_departures
 
 
 def main():
@@ -20,6 +21,22 @@ def main():
     query.add_argument('--date', required=True)
     query.add_argument('--stop', required=True)
     query.add_argument('--after', default='00:00:00')
+
+    init = commands.add_parser('revision-init')
+    init.add_argument('--source-db', type=Path, required=True)
+    init.add_argument('--db', type=Path, required=True)
+
+    apply = commands.add_parser('revision-apply')
+    apply.add_argument('--db', type=Path, required=True)
+    apply.add_argument('--file', type=Path, required=True)
+
+    revised = commands.add_parser('revised-departures')
+    revised.add_argument('--db', type=Path, required=True)
+    revised.add_argument('--date', required=True)
+    revised.add_argument('--stop', required=True)
+    revised.add_argument('--after', default='00:00:00')
+    revised.add_argument('--known-seq', type=int, default=None)
+
     args = parser.parse_args()
     temporary = None
     try:
@@ -30,8 +47,15 @@ def main():
             result = import_feed(args.source, temporary)
             # Hard-link publication is atomic and refuses existing paths.
             os.link(temporary, args.db)
-        else:
+        elif args.command == 'departures':
             result = departures(args.db, args.date, args.stop, args.after)
+        elif args.command == 'revision-init':
+            result = revision_init(args.source_db, args.db)
+        elif args.command == 'revision-apply':
+            result = revision_apply(args.db, args.file)
+        else:
+            result = revised_departures(args.db, args.date, args.stop,
+                                        args.after, args.known_seq)
     except (OSError, ValueError, TypeError, sqlite3.Error) as error:
         print(str(error), file=sys.stderr)
         return 2
