@@ -1,0 +1,5 @@
+stop_id,stop_name
+A,Alpha
+B,Beta
+C,Gamma
+D,Delta

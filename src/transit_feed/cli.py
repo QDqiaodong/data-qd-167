@@ -11,6 +11,8 @@ from .duty import duty_check
 from .query import departures
 from .regional import regional_departures, regional_init
 from .revision import revision_apply, revision_init, revised_departures
+from .booking import (booking_cancel, booking_create, booking_init,
+                      booking_show)
 
 
 def feed_argument(value):
@@ -73,6 +75,23 @@ def main():
     duty.add_argument('--from', dest='from_date', required=True)
     duty.add_argument('--to', dest='to_date', required=True)
 
+    booking_load = commands.add_parser('booking-init')
+    booking_load.add_argument('--source-db', type=Path, required=True)
+    booking_load.add_argument('--capacities', type=Path, required=True)
+    booking_load.add_argument('--db', type=Path, required=True)
+
+    booking_make = commands.add_parser('booking-create')
+    booking_make.add_argument('--db', type=Path, required=True)
+    booking_make.add_argument('--file', type=Path, required=True)
+
+    booking_drop = commands.add_parser('booking-cancel')
+    booking_drop.add_argument('--db', type=Path, required=True)
+    booking_drop.add_argument('--booking', required=True)
+
+    booking_view = commands.add_parser('booking-show')
+    booking_view.add_argument('--db', type=Path, required=True)
+    booking_view.add_argument('--booking', required=True)
+
     args = parser.parse_args()
     temporary = None
     try:
@@ -101,6 +120,14 @@ def main():
         elif args.command == 'duty-check':
             result = duty_check(args.db, args.duties, args.links,
                                 args.from_date, args.to_date)
+        elif args.command == 'booking-init':
+            result = booking_init(args.source_db, args.capacities, args.db)
+        elif args.command == 'booking-create':
+            result = booking_create(args.db, args.file)
+        elif args.command == 'booking-cancel':
+            result = booking_cancel(args.db, args.booking)
+        elif args.command == 'booking-show':
+            result = booking_show(args.db, args.booking)
         else:
             result = revised_departures(args.db, args.date, args.stop,
                                         args.after, args.known_seq)

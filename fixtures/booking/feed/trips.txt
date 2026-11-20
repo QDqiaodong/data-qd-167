@@ -1,0 +1,4 @@
+trip_id,service_id
+T,WK
+U,WK
+V,WK

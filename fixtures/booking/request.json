@@ -1,0 +1,11 @@
+{
+  "booking_id": "Q",
+  "origin": "A",
+  "destination": "D",
+  "service_date": "2026-11-20",
+  "earliest": "08:00:00",
+  "latest_arrival": "11:00:00",
+  "party_size": 2,
+  "max_transfers": 1,
+  "min_transfer_seconds": 300
+}

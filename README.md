@@ -150,3 +150,55 @@ C2,B,2026-01-07,2026-01-08,Staff shortage at Hill
 跨服务日样例 `fixtures/duty-rolling`：D 日 T4 从 A 24:20 到 B 25:00，D+1 日 T5 从 B 00:50 到 C 01:30，同属 V2。只查 2026-01-07 也会报 T4/T5 重叠 10 分钟，`previous.service_date` 仍是 2026-01-06，`start=24:20:00`、`end=25:00:00`。
 
 Python 接口 `transit_feed.duty_check(database, duties_file, links_file, from_date, to_date)` 返回与 CLI 相同的字典；CLI 只向 stdout 输出一份 JSON。业务冲突仍是成功查询，退出 0；输入错误、未知 trip/stop、重复有向规则、非法日期/数值、CSV 损坏、DB 缺失或不是合法 import 档案时抛 `ValueError`（或对应 `OSError`/`sqlite3.Error`），CLI 退出 2、stderr 给出原因、stdout 为空。
+
+## 团体行程订座工作台
+
+`booking-init` 从一个合法 `import` 档案复制出独立订座仓，并为每个 trip 固定一份每服务日容量；修订仓、区域仓和已有订座仓都会被拒绝。NEW 必须不存在（含符号链接），全部校验通过后才原子发布，失败不留下目标或临时文件；发布后可删除 BASE 与容量 CSV，工作台独立运行。样例档案在 `fixtures/booking`：T 为 A09:00→B09:30→C10:00，U 为 B09:35→D10:10，V 为 A09:05→D10:30，三趟各 2 座。
+
+```sh
+.venv/bin/transit-feed import --source fixtures/booking/feed --db run/booking-base.sqlite
+.venv/bin/transit-feed booking-init --source-db run/booking-base.sqlite \
+  --capacities fixtures/booking/capacities.csv --db run/booking.sqlite
+# {"bookings": 0, "trips": 3}
+```
+
+容量 CSV 是严格 UTF-8（可带 BOM），精确表头 `trip_id,seats`，每个现有 trip 恰一行，不允许遗漏、重复或未知 trip；ID 精确匹配不修剪，`seats` 只接受 ASCII 十进制数字、数值 0..10000（允许前导零，允许 0 座），错误编码、列数错误或非法数值整体拒绝。
+
+请求 JSON 精确包含 `booking_id,origin,destination,service_date,earliest,latest_arrival,party_size,max_transfers,min_transfer_seconds` 九个字段，拒绝重复键、缺字段、多余字段；布尔、浮点和数字字符串都不能用于整数字段。只使用 `service_date` 当天实际开行的 trip 实例（calendar + 加开/停开例外），`24:xx` 仍属于该服务日。相邻腿在同一 `stop_id` 换乘且满足最短换乘秒数（含等号），一个行程最多 `max_transfers+1` 腿、同一 trip 至多乘一次；`fixtures/booking/request.json` 是一个完整请求样例。
+
+### 成功、改道与无座示例
+
+```sh
+# P 订 B→C：占用 T 的 B→C 后半程（2 座恰好占满该区间）
+printf '%s' '{"booking_id":"P","origin":"B","destination":"C","service_date":"2026-11-20","earliest":"08:00:00","latest_arrival":"11:00:00","party_size":2,"max_transfers":1,"min_transfer_seconds":300}' > run/p.json
+.venv/bin/transit-feed booking-create --db run/booking.sqlite --file run/p.json
+# accepted=true，arrival=10:00:00，单腿 T 站序 2→3
+
+# Q 订 A→D：T 前半程仍空，可乘 T+U，10:10 到达（成功示例）
+.venv/bin/transit-feed booking-create --db run/booking.sqlite \
+  --file fixtures/booking/request.json
+
+# R 再订 A→D：T+U 的余座已被 P、Q 占满，自动改乘 V，10:30 到达（改道示例）
+printf '%s' '{"booking_id":"R","origin":"A","destination":"D","service_date":"2026-11-20","earliest":"08:00:00","latest_arrival":"11:00:00","party_size":2,"max_transfers":1,"min_transfer_seconds":300}' > run/r.json
+.venv/bin/transit-feed booking-create --db run/booking.sqlite --file run/r.json
+
+# 取消 Q 后，S 尝试 A→C：T 后半程仍被 P 占满，正常业务失败（无座示例，退出 0）
+.venv/bin/transit-feed booking-cancel --db run/booking.sqlite --booking Q
+printf '%s' '{"booking_id":"S","origin":"A","destination":"C","service_date":"2026-11-20","earliest":"08:00:00","latest_arrival":"11:00:00","party_size":2,"max_transfers":1,"min_transfer_seconds":300}' > run/s.json
+.venv/bin/transit-feed booking-create --db run/booking.sqlite --file run/s.json
+# {"accepted": false, "arrival": null, "legs": [], ...}，不扣任何余座、不占用 S
+
+# W 此时可订 A→D，再次走 T+U；重放已取消的 Q 只返回原 10:10 收据，不恢复占用
+.venv/bin/transit-feed booking-show --db run/booking.sqlite --booking Q
+# {"status": "cancelled", "receipt": {...原 10:10 成功收据...}}
+```
+
+### 区间座位、决胜与取消重放口径
+
+- 座位按 `(trip_id, service_date, 相邻站序对)` 管理。从站序 a 乘到 b 的腿必须在其覆盖的**每个**相邻区间都有至少 `party_size` 个余座，订座成功后同时占用；容量不按整趟一次扣减，a→b 与 b→c 可由不同团体复用同一座位。任一区间的合计用量（所有未取消且覆盖该区间的成功预订人数之和）始终不超过该 trip 容量；团体不可拆分。
+- 选路决胜依次为：最终到达秒数较早者优先；乘车腿数较少者优先；仍相同则按各腿 `(trip_id, board_sequence, alight_sequence)` 列表逐项字典序（trip_id 按 Unicode 码点、站序按整数）。忽略容量的最佳路线无座时继续考虑其余路线；较晚到达换乘站但腿数更少的前缀不会被剪枝，因此不会漏掉受换乘上限约束的唯一可行方案。
+- 成功收据精确含 `booking_id,accepted,party_size,service_date,arrival,legs`；每腿精确含 `trip_id,board_sequence,alight_sequence,from_stop,to_stop,departure,arrival`。无座是 `accepted=false, arrival=null, legs=[]` 的正常结果，退出 0，不留部分腿或占用，该 ID 之后可重新尝试。
+- 成功 ID 永久绑定首次请求的全部字段与原收据：同 ID 同请求重放只返回原收据，不重新选路、不再次扣座，取消后依然如此；同 ID 改动任一字段即报错（即使已取消、即使新请求无车可乘）。先做完整请求校验，再检查身份与重放，只有全新 ID 才按当前余座选路。
+- `booking-cancel` 对有效预订一次性释放全部腿并永久保留请求与收据，重复取消返回相同结果且不会再次释放；未知 ID 报错。`booking-show` 只读返回 `{booking_id,status,receipt}`。每次 create/cancel 都是一个整体事务，跨进程重启后身份、取消状态、原收据与余座承诺仍然有效。
+
+Python 接口与 CLI 共用实现并返回相同的 JSON 可序列化字典：`transit_feed.booking_init(source_db, capacities_csv, new_db)`、`booking_create(database, request)`（`request` 为 Python 字典，也接受请求文件路径）、`booking_cancel(database, booking_id)`、`booking_show(database, booking_id)`。非法输入抛 `ValueError`（或对应 `OSError`/`sqlite3.Error`），CLI 退出 2、stderr 说明原因、stdout 为空；每条成功命令 stdout 只有一份 JSON。单操作者本地工作台，不提供联网服务、多写者协议或自动候补。

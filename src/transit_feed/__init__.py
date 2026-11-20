@@ -5,7 +5,10 @@ from .duty import duty_check
 from .query import departures
 from .regional import regional_departures, regional_init
 from .revision import revision_apply, revision_init, revised_departures
+from .booking import (booking_cancel, booking_create, booking_init,
+                      booking_show)
 
 __all__ = ['import_feed', 'departures', 'revision_init', 'revision_apply',
            'revised_departures', 'regional_init', 'regional_departures',
-           'stop_board', 'duty_check']
+           'stop_board', 'duty_check', 'booking_init', 'booking_create',
+           'booking_cancel', 'booking_show']
