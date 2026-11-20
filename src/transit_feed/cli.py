@@ -7,6 +7,7 @@ import sys
 import tempfile
 from .feed import import_feed
 from .closure import stop_board
+from .duty import duty_check
 from .query import departures
 from .regional import regional_departures, regional_init
 from .revision import revision_apply, revision_init, revised_departures
@@ -65,6 +66,13 @@ def main():
     board.add_argument('--stop', required=True)
     board.add_argument('--after', default='00:00:00')
 
+    duty = commands.add_parser('duty-check')
+    duty.add_argument('--db', type=Path, required=True)
+    duty.add_argument('--duties', type=Path, required=True)
+    duty.add_argument('--links', type=Path, required=True)
+    duty.add_argument('--from', dest='from_date', required=True)
+    duty.add_argument('--to', dest='to_date', required=True)
+
     args = parser.parse_args()
     temporary = None
     try:
@@ -90,6 +98,9 @@ def main():
         elif args.command == 'stop-board':
             result = stop_board(args.db, args.closures, args.date, args.stop,
                                 args.after)
+        elif args.command == 'duty-check':
+            result = duty_check(args.db, args.duties, args.links,
+                                args.from_date, args.to_date)
         else:
             result = revised_departures(args.db, args.date, args.stop,
                                         args.after, args.known_seq)

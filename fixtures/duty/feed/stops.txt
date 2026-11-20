@@ -1,0 +1,5 @@
+stop_id,stop_name
+A,Harbor
+B,Hill
+C,Library
+D,Depot

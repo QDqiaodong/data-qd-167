@@ -124,3 +124,29 @@ C2,B,2026-01-07,2026-01-08,Staff shortage at Hill
 开放日顶层 `closed=false`，各访问 `serviceable=true` 且 `closure_ids` 为空；关闭日即使没有计划班次也返回 `closed=true` 与通知身份，而不是误报开放。未知站点、非法日期/`after`、缺失或损坏的档案与关闭文件均报错，查询不创建或修改任何路径。Python 接口 `transit_feed.stop_board(database, closures_csv, service_date, stop, after='00:00:00')` 返回同一字典，非法输入抛出 `ValueError`；CLI 统一退出码 2 并写 stderr。
 
 单操作者本地批处理；不承诺并发发布或断电恢复。代码/样例采用MIT许可。
+
+## 车辆轮转核验
+
+`duty-check` 在只读 import 档案之上，用两份独立 CSV 回答“调度员给每辆车排的跨趟轮转能否执行”。档案本身、修订仓与区域仓都不改写；不在轮转表中的行程不进入本次车辆计划。
+
+```sh
+.venv/bin/transit-feed import --source fixtures/duty/feed --db run/duty.sqlite
+.venv/bin/transit-feed duty-check --db run/duty.sqlite \
+  --duties fixtures/duty/duties.csv --links fixtures/duty/links.csv \
+  --from 2026-01-06 --to 2026-01-06
+# {"connections": [], "duplicate_assignments": [], "feasible": true}
+
+.venv/bin/transit-feed duty-check --db run/duty.sqlite \
+  --duties fixtures/duty/duties.csv --links fixtures/duty/links.csv \
+  --from 2026-01-07 --to 2026-01-07
+# {"connections": [{"kind": "insufficient_turnaround", "vehicle_id": "V1", ...}],
+#  "duplicate_assignments": [], "feasible": false}
+```
+
+轮转 CSV 精确表头为 `vehicle_id,trip_id,start_date,end_date`，每行把 `trip_id` 在闭区间 `start_date..end_date` 内实际开行的实例分配给 `vehicle_id`。衔接 CSV 精确表头为 `from_stop,to_stop,seconds`，`seconds` 是 0..86400 的十进制非负整数，同一有向站点对只能出现一次（反向需另写一行）。两份文件都是 UTF-8（可带 BOM），严格校验列数与每一行，最多 8,000,000 字节、20,000 条数据行；只有表头的空文件合法。
+
+联动样例 `fixtures/duty`：T1 在 B 站 10:00 结束、T2 从 B 10:10 到 C 11:00、T3 从 C 11:10 发车，`B->C` 调车 90 分钟时三趟可衔接。`fixtures/duty/feed` 的 `calendar_dates` 在 2026-01-07 停开 T2 后，新邻接 T1/T3 只有 70 分钟，于是报 `insufficient_turnaround`，`available_seconds=4200`、`required_seconds=5400`、`shortfall_seconds=1200`；停开只改资格，不会把 T2 认作重复或缺车。
+
+跨服务日样例 `fixtures/duty-rolling`：D 日 T4 从 A 24:20 到 B 25:00，D+1 日 T5 从 B 00:50 到 C 01:30，同属 V2。只查 2026-01-07 也会报 T4/T5 重叠 10 分钟，`previous.service_date` 仍是 2026-01-06，`start=24:20:00`、`end=25:00:00`。
+
+Python 接口 `transit_feed.duty_check(database, duties_file, links_file, from_date, to_date)` 返回与 CLI 相同的字典；CLI 只向 stdout 输出一份 JSON。业务冲突仍是成功查询，退出 0；输入错误、未知 trip/stop、重复有向规则、非法日期/数值、CSV 损坏、DB 缺失或不是合法 import 档案时抛 `ValueError`（或对应 `OSError`/`sqlite3.Error`），CLI 退出 2、stderr 给出原因、stdout 为空。
