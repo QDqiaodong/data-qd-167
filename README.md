@@ -88,4 +88,39 @@ B,S,X
 
 结果按 departure 秒数、`feed_key`、`trip_id`、`stop_sequence` 排序；同名 trip、同一时刻及同一 trip 对同一换乘点的多次站序访问都作为独立记录保留。已登记但当日无班次的换乘点返回空 `departures`，未知换乘点、非法日期/`after`、损坏仓或缺失数据库一律报错。Python 接口 `transit_feed.regional_init(feeds, interchanges_csv, new_db)` 与 `transit_feed.regional_departures(database, service_date, interchange_id, after='00:00:00')` 返回与 CLI 相同的字典；`feeds` 可为 `{KEY: DB}`、`[(KEY, DB)]` 或 `["KEY=DB"]`。非法输入抛出 `ValueError`。
 
+## 站点关闭看板
+
+`stop-board` 在不改写时刻档案的前提下，给出某服务日某站点的计划发车、可服务状态与命中的关闭通知。关闭计划独立保存在 UTF-8 CSV 中，可随时更新；查询每次重读该文件。
+
+```sh
+.venv/bin/transit-feed stop-board --db run/timetable.sqlite \
+  --closures fixtures/closures.csv --date 2026-01-07 --stop B
+```
+
+关闭 CSV 列顺序严格为 `closure_id,stop_id,from,to,reason`，首行表头，样例见 `fixtures/closures.csv`：
+
+```csv
+closure_id,stop_id,from,to,reason
+C1,B,2026-01-06,2026-01-07,Track works at Hill
+C2,B,2026-01-07,2026-01-08,Staff shortage at Hill
+```
+
+`closure_id`、`stop_id` 为非空、无首尾空白的标识符；`from`/`to` 是规范 `YYYY-MM-DD` 服务日且 `from<=to`（闭区间）；`reason` 为非空说明。文件内 `closure_id` 唯一；同一站点可有日期重叠的多条通知，各自保留身份与原因，绝不合并。`stop_id` 必须存在于所查档案。错误编码、错误表头、缺列/多列、重复ID、未知站点、非规范或倒置日期、空字段一律拒绝。
+
+同一条通知覆盖该站点和该服务日时，该站该次访问不可服务；同一 trip 在其他站点的访问、其他站点的计划班次与服务日资格都不受影响。关闭区间以字符串比较判定，从不按服务日展开，可跨多年。
+
+```json
+{"closed":true,"closure_ids":["C1","C2"],
+ "closures":[{"closure_id":"C1","reason":"Track works at Hill"},
+             {"closure_id":"C2","reason":"Staff shortage at Hill"}],
+ "departures":[{"closure_ids":["C1","C2"],"departure":"24:12:00",
+   "service_date":"2026-01-07","serviceable":false,
+   "stop_sequence":2,"trip_id":"T1"}],
+ "service_date":"2026-01-07","stop_id":"B"}
+```
+
+计划发车仍按该服务日 calendar 与 exceptions 判定（起止闭区间、周一至周日标志、1 加开 / 2 停开），每个 `trip_id`/`stop_sequence` 访问都是独立记录。`--after` 省略时 `00:00:00`，格式为 `00:00:00`..`47:59:59` 且含等号；`24:xx` 仍属于原服务日。`departures` 按最终发车秒数、`trip_id`、`stop_sequence` 排序。`closure_ids` 是该站当日全部命中通知 ID，按 Unicode 码点排序；`closures` 与之同序，只含 `closure_id` 与 `reason`。
+
+开放日顶层 `closed=false`，各访问 `serviceable=true` 且 `closure_ids` 为空；关闭日即使没有计划班次也返回 `closed=true` 与通知身份，而不是误报开放。未知站点、非法日期/`after`、缺失或损坏的档案与关闭文件均报错，查询不创建或修改任何路径。Python 接口 `transit_feed.stop_board(database, closures_csv, service_date, stop, after='00:00:00')` 返回同一字典，非法输入抛出 `ValueError`；CLI 统一退出码 2 并写 stderr。
+
 单操作者本地批处理；不承诺并发发布或断电恢复。代码/样例采用MIT许可。

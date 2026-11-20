@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 from .feed import import_feed
+from .closure import stop_board
 from .query import departures
 from .regional import regional_departures, regional_init
 from .revision import revision_apply, revision_init, revised_departures
@@ -57,6 +58,13 @@ def main():
     regional_query.add_argument('--interchange', required=True)
     regional_query.add_argument('--after', default='00:00:00')
 
+    board = commands.add_parser('stop-board')
+    board.add_argument('--db', type=Path, required=True)
+    board.add_argument('--closures', type=Path, required=True)
+    board.add_argument('--date', required=True)
+    board.add_argument('--stop', required=True)
+    board.add_argument('--after', default='00:00:00')
+
     args = parser.parse_args()
     temporary = None
     try:
@@ -79,6 +87,9 @@ def main():
         elif args.command == 'regional-departures':
             result = regional_departures(args.db, args.date, args.interchange,
                                          args.after)
+        elif args.command == 'stop-board':
+            result = stop_board(args.db, args.closures, args.date, args.stop,
+                                args.after)
         else:
             result = revised_departures(args.db, args.date, args.stop,
                                         args.after, args.known_seq)
