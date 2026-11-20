@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import tempfile
@@ -13,6 +14,8 @@ from .regional import regional_departures, regional_init
 from .revision import revision_apply, revision_init, revised_departures
 from .booking import (booking_cancel, booking_create, booking_init,
                       booking_show)
+from .punctuality import (punctuality_init, punctuality_report,
+                          punctuality_revise, punctuality_show)
 
 
 def feed_argument(value):
@@ -20,6 +23,13 @@ def feed_argument(value):
     if not separator:
         raise argparse.ArgumentTypeError('--feed must be KEY=DB')
     return key, path
+
+
+def ascii_integer(value):
+    if not re.fullmatch(r'[0-9]+', value):
+        raise argparse.ArgumentTypeError(
+            'ASCII decimal digits required: ' + value)
+    return int(value)
 
 
 def main():
@@ -92,6 +102,36 @@ def main():
     booking_view.add_argument('--db', type=Path, required=True)
     booking_view.add_argument('--booking', required=True)
 
+    punctuality_init_cmd = commands.add_parser('punctuality-init')
+    punctuality_init_cmd.add_argument('--db', type=Path, required=True)
+
+    punctuality_report_cmd = commands.add_parser('punctuality-report')
+    punctuality_report_cmd.add_argument('--db', type=Path, required=True)
+    punctuality_report_cmd.add_argument('--reports', type=Path, required=True)
+    punctuality_report_cmd.add_argument('--report', required=True)
+    punctuality_report_cmd.add_argument('--observations', type=Path,
+                                        required=True)
+    punctuality_report_cmd.add_argument('--from', dest='from_date',
+                                        required=True)
+    punctuality_report_cmd.add_argument('--to', dest='to_date', required=True)
+    punctuality_report_cmd.add_argument('--known-seq', type=ascii_integer,
+                                        default=None)
+    punctuality_report_cmd.add_argument('--early-tolerance',
+                                        type=ascii_integer, default=60)
+    punctuality_report_cmd.add_argument('--late-tolerance',
+                                        type=ascii_integer, default=300)
+
+    punctuality_show_cmd = commands.add_parser('punctuality-show')
+    punctuality_show_cmd.add_argument('--reports', type=Path, required=True)
+    punctuality_show_cmd.add_argument('--report', required=True)
+
+    punctuality_revise_cmd = commands.add_parser('punctuality-revise')
+    punctuality_revise_cmd.add_argument('--reports', type=Path, required=True)
+    punctuality_revise_cmd.add_argument('--base', required=True)
+    punctuality_revise_cmd.add_argument('--report', required=True)
+    punctuality_revise_cmd.add_argument('--decisions', type=Path,
+                                        required=True)
+
     args = parser.parse_args()
     temporary = None
     try:
@@ -128,10 +168,23 @@ def main():
             result = booking_cancel(args.db, args.booking)
         elif args.command == 'booking-show':
             result = booking_show(args.db, args.booking)
+        elif args.command == 'punctuality-init':
+            result = punctuality_init(args.db)
+        elif args.command == 'punctuality-report':
+            result = punctuality_report(
+                args.db, args.reports, args.report, args.observations,
+                args.from_date, args.to_date, args.known_seq,
+                args.early_tolerance, args.late_tolerance)
+        elif args.command == 'punctuality-show':
+            result = punctuality_show(args.reports, args.report)
+        elif args.command == 'punctuality-revise':
+            result = punctuality_revise(args.reports, args.base, args.report,
+                                        args.decisions)
         else:
             result = revised_departures(args.db, args.date, args.stop,
                                         args.after, args.known_seq)
-    except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+    except (OSError, ValueError, TypeError, sqlite3.Error,
+            argparse.ArgumentTypeError) as error:
         print(str(error), file=sys.stderr)
         return 2
     finally:

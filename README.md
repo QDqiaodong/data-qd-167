@@ -202,3 +202,35 @@ printf '%s' '{"booking_id":"S","origin":"A","destination":"C","service_date":"20
 - `booking-cancel` 对有效预订一次性释放全部腿并永久保留请求与收据，重复取消返回相同结果且不会再次释放；未知 ID 报错。`booking-show` 只读返回 `{booking_id,status,receipt}`。每次 create/cancel 都是一个整体事务，跨进程重启后身份、取消状态、原收据与余座承诺仍然有效。
 
 Python 接口与 CLI 共用实现并返回相同的 JSON 可序列化字典：`transit_feed.booking_init(source_db, capacities_csv, new_db)`、`booking_create(database, request)`（`request` 为 Python 字典，也接受请求文件路径）、`booking_cancel(database, booking_id)`、`booking_show(database, booking_id)`。非法输入抛 `ValueError`（或对应 `OSError`/`sqlite3.Error`），CLI 退出 2、stderr 说明原因、stdout 为空；每条成功命令 stdout 只有一份 JSON。单操作者本地工作台，不提供联网服务、多写者协议或自动候补。
+
+## 实际到站准点性账本
+
+`punctuality-init` 建立一个与调度档案完全独立的准点报告账本；`import` 档案与 `revision-init` 修订仓都可作为只读调度源，账本本身不复制调度数据，只保存每份报告及其复核所需的历史事实。
+
+```sh
+.venv/bin/transit-feed punctuality-init --db run/punctuality.sqlite
+.venv/bin/transit-feed punctuality-report --db run/timetable.sqlite \
+  --reports run/punctuality.sqlite --report DAILY-1 \
+  --observations observations.csv --from 2026-01-05 --to 2026-01-05 \
+  --early-tolerance 60 --late-tolerance 300
+.venv/bin/transit-feed punctuality-show --reports run/punctuality.sqlite --report DAILY-1
+.venv/bin/transit-feed punctuality-revise --reports run/punctuality.sqlite \
+  --base DAILY-1 --report DAILY-1-R1 --decisions confirmations.json
+```
+
+实际记录是严格 UTF-8 CSV（可带 BOM），精确表头 `event_id,trip_id,service_date,stop_id,observed_arrival`；`event_id` 全文件唯一，标识符非空且不做静默修剪，trip/stop 必须存在于调度档案。`service_date` 是落在闭区间 `--from..--to` 内的规范 `YYYY-MM-DD`；`observed_arrival` 用服务日时钟 `00:00:00..47:59:59`，`24:xx` 仍属于所给服务日，从不换算为民用日期。文件最多 8,000,000 字节、20,000 条数据行，只有表头的空文件合法并返回零计数。全部数据行都参与校验，空结果或停开服务不会跳过错误行。
+
+每个 `(service_date, trip_id)` 是一个趟次；报告只涵盖 CSV 中至少有一条事件的趟次，不枚举没有上报的班次。实际事件按到站秒数、再按 `event_id` 的 Unicode 码点排序；计划访问按 `stop_sequence` 排序，修订仓按该服务日与知识序号应用有效修订后的 `arrival`。原始档案的知识序号固定为 0；修订仓省略 `--known-seq` 时取调用开始时的当前序号，显式值必须是 0 到当前序号的整数。一份报告只使用一个确定的知识快照。
+
+配对是**全局序列对齐**而非逐条贪心：先使配对数最多，再使全部配对的 `abs(实际-计划)` 总秒数最小，仍相同时取按实际事件顺序排列的 `(event_id, stop_sequence)` 列表中字典序最小者。每个实际事件与每次计划访问至多参与一个配对，且两侧序列顺序都不得颠倒，只有相同 `stop_id` 才能配对。该规则可处理同一站重复经过、中间事件漏采、无法对应线路的实际站点以及同一时刻的多条事件，相同输入与知识快照始终得到相同结果。
+
+偏差为“实际减计划”秒数：小于 `-early_tolerance` 为 `early`，大于 `late_tolerance` 为 `late`，两个边界（含 0 容差下的 0 偏差）都计入 `on_time`。未配对的计划访问计为 `missed`（漏采），未配对的实际事件单列且不计入早/准/晚。趟次在指定服务日不开行时仍保留在结果中：`service_active=false`、计划访问为空、所有实际事件列为未配对，绝不套用其他服务日的计划。
+
+人工复核文件是顶层严格为 `{"confirmations":[...]}` 的非空 JSON，每项只有字符串 `event_id` 与正整数 `stop_sequence`（布尔值不算整数），拒绝重复 JSON 键、重复确认项与未知事件。确认项必须定位到该事件所在趟次原报告中真实开行、站序存在且站点相同的访问；一批确认不得重复使用同一事件或同一访问，也不能颠倒该趟两侧的相对顺序，任一无效即整批拒绝、不占用新 ID。复核只能基于已保存的**首次报告**，可对同一首次报告生成多份独立复核，但不能在复核之上继续叠加。
+
+复核沿用首次报告的实际事件、开行资格、有效计划到站、知识序号与早晚阈值，因此源调度仓与原观测 CSV 被移动或删除后仍可完成复核。受影响趟次仍按原全局优先级重算，但确认项必须全部出现在配对中，其余配对可随之改变；没有确认项的趟次保持原配对。确认只决定归属，分类仍按原阈值如实计算。报告、请求身份与复核历史事实在一个 SQLite 事务中整体提交。
+
+请求身份与重放：首次报告身份包含生成方式、调度档案与观测 CSV 的规范化绝对路径、CSV 原始字节 SHA-256、日期范围、早晚阈值，以及知识序号是否显式指定和所指定的值；账本路径本身不是身份字段。同 ID 同请求重放时直接返回原报告，不重新打开调度档案（CSV 仍须可读以核对字节）；同 ID 改动任一身份字段即报错。复核身份只含复核方式、首次报告 ID 与完整确认对集合，确认文件路径、JSON 键顺序和数组排列都不影响身份；两种生成方式共用同一永久 ID 空间。`punctuality-show` 严格只读，未知 ID 报错；缺失账本从不被创建，其余命令只接受由 `punctuality-init` 初始化的有效账本。
+
+Python 接口为 `transit_feed.punctuality_init(report_database)`、`punctuality_report(schedule_database, report_database, report_id, observations_csv, from_date, to_date, known_seq=None, early_tolerance=60, late_tolerance=300)`、`punctuality_show(report_database, report_id)`、`punctuality_revise(report_database, base_report_id, report_id, decisions_file)`，返回与 CLI 相同的 JSON 可序列化字典；整数字段在 Python 接口中拒绝布尔值与数字字符串。单操作者本地账本，不提供联网服务或多写者协议。
+
