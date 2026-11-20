@@ -55,4 +55,37 @@ uv pip check --python .venv/bin/python
 
 Python 接口与 CLI 共用同一实现：`transit_feed.revision_init(source_db, new_db)`、`transit_feed.revision_apply(db, {"changes":[...]})`（也接受批次文件路径）、`transit_feed.revised_departures(db, day, stop, after="00:00:00", known_seq=None)`。错误统一抛出 `ValueError`；CLI 转为退出码 2 和 stderr。
 
+## 区域时刻仓
+
+`regional-init` 把 2 至 8 个既有 `import` 档案合并成一个只读区域仓；各发布方保留自己的 stop/trip/service 命名空间，互不交叉。`--feed KEY=DB` 可重复，KEY 非空、无首尾空白且唯一，输入路径不可重复；只接受基线档案，修订仓会被拒绝。
+
+```sh
+.venv/bin/transit-feed regional-init \
+  --feed A=run/a.sqlite --feed B=run/b.sqlite \
+  --interchanges run/interchanges.csv --db run/regional.sqlite
+.venv/bin/transit-feed regional-departures --db run/regional.sqlite \
+  --date 2026-01-05 --interchange X --after 00:00:00
+```
+
+映射是严格 UTF-8 CSV，列顺序固定为 `feed_key,stop_id,interchange_id`：
+
+```csv
+feed_key,stop_id,interchange_id
+A,S,X
+A,P,X
+B,S,X
+```
+
+每行引用本 KEY 档案中存在的站点；同一来源站点最多映射一次，不同来源的站点可共用一个 `interchange_id`，未映射站点不进入区域查询。初始化先完整校验全部档案、映射与数据关系，再在目标目录内写临时库并原子发布；NEW 必须不存在（含符号链接），失败不会发布目标或留下临时产物。查询仅读取复制后的数据，输入档案与映射文件可在初始化后删除或移动。
+
+日期按发布方各自 calendar 起止闭区间与周一至周日标志判定，再由该发布方自己的 `calendar_dates` 例外覆盖（1 加开、2 停开）；同名 service 的日历与例外绝不跨发布方合并。`after` 含等号，默认 `00:00:00`；24:xx 仍附着于所查服务日。输出：
+
+```json
+{"service_date":"2026-01-05","interchange_id":"X",
+ "departures":[{"feed_key":"B","trip_id":"T","stop_sequence":1,
+   "departure":"09:00:00","service_date":"2026-01-05"}]}
+```
+
+结果按 departure 秒数、`feed_key`、`trip_id`、`stop_sequence` 排序；同名 trip、同一时刻及同一 trip 对同一换乘点的多次站序访问都作为独立记录保留。已登记但当日无班次的换乘点返回空 `departures`，未知换乘点、非法日期/`after`、损坏仓或缺失数据库一律报错。Python 接口 `transit_feed.regional_init(feeds, interchanges_csv, new_db)` 与 `transit_feed.regional_departures(database, service_date, interchange_id, after='00:00:00')` 返回与 CLI 相同的字典；`feeds` 可为 `{KEY: DB}`、`[(KEY, DB)]` 或 `["KEY=DB"]`。非法输入抛出 `ValueError`。
+
 单操作者本地批处理；不承诺并发发布或断电恢复。代码/样例采用MIT许可。
